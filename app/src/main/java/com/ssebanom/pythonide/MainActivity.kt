@@ -74,7 +74,18 @@ class MainActivity : AppCompatActivity() {
 
     private val pythonReady: Boolean get() = App.startupError == null
 
+    private enum class Lang(val display: String) {
+        PYTHON("Python"), JAVASCRIPT("JavaScript"), LUA("Lua")
+    }
+
+    private fun langOf(file: File): Lang = when {
+        file.name.endsWith(".js") -> Lang.JAVASCRIPT
+        file.name.endsWith(".lua") -> Lang.LUA
+        else -> Lang.PYTHON
+    }
+
     @Volatile private var running = false
+    @Volatile private var cancelRequested = false
     private var runMenuItem: MenuItem? = null
     private var stopMenuItem: MenuItem? = null
     private val inputQueue = LinkedBlockingQueue<String>()
@@ -114,8 +125,18 @@ class MainActivity : AppCompatActivity() {
     private var stderrColor = 0
     private var inputColor = 0
 
-    private val highlightRunnable = Runnable {
-        highlighter.highlight(editor.text)
+    private val highlightRunnable = Runnable { applyHighlight() }
+
+    /** Apply Python syntax colours only for .py files; clear them otherwise. */
+    private fun applyHighlight() {
+        if (currentFile?.let { langOf(it) } == Lang.PYTHON) {
+            highlighter.highlight(editor.text)
+        } else {
+            val text = editor.text
+            for (span in text.getSpans(0, text.length, ForegroundColorSpan::class.java)) {
+                text.removeSpan(span)
+            }
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -330,23 +351,24 @@ class MainActivity : AppCompatActivity() {
     // -------------------------------------------------- live error checking
 
     private fun runCheck() {
-        if (!pythonReady) return
-        val file = currentFile
-        if (file == null || !file.name.endsWith(".py")) {
-            applyProblems(emptyList())
-            return
-        }
+        val file = currentFile ?: return
+        val lang = langOf(file)
+        if (lang == Lang.PYTHON && !pythonReady) return
         val source = editor.text.toString()
         val seq = ++checkSeq
         Thread({
             val json = try {
-                runner.callAttr("check_code", source).toString()
+                when (lang) {
+                    Lang.PYTHON -> runner.callAttr("check_code", source).toString()
+                    Lang.JAVASCRIPT -> ScriptEngines.checkJavaScript(source)
+                    Lang.LUA -> ScriptEngines.checkLua(source)
+                }
             } catch (e: Throwable) {
                 "[]"
             }
             val parsed = parseProblems(json)
             runOnUiThread { if (seq == checkSeq) applyProblems(parsed) }
-        }, "PyCheck").start()
+        }, "Check").start()
     }
 
     private fun parseProblems(json: String): List<Problem> {
@@ -479,7 +501,7 @@ class MainActivity : AppCompatActivity() {
         problemSpans.clear()
         problems.clear()
         updateGutter(editor.text)
-        highlighter.highlight(editor.text)
+        applyHighlight()
         updateProblemsBar()
         supportActionBar?.subtitle = "${file.name}  ·  v${appVersion()}"
         getSharedPreferences(PREFS, MODE_PRIVATE).edit()
@@ -493,29 +515,44 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun promptNewFile() {
+        // Language choice controls the default extension and starter content.
+        val languages = arrayOf("Python (.py)", "JavaScript (.js)", "Lua (.lua)")
+        val exts = arrayOf(".py", ".js", ".lua")
+        var chosen = 0
+
         val input = EditText(this).apply {
-            hint = "script_name.py"
+            hint = "script_name"
             inputType = InputType.TYPE_CLASS_TEXT
         }
         AlertDialog.Builder(this)
             .setTitle("New file")
+            .setSingleChoiceItems(languages, 0) { _, which -> chosen = which }
             .setView(wrapWithMargin(input))
             .setPositiveButton("Create") { _, _ ->
                 var name = input.text.toString().trim()
                 if (name.isEmpty()) return@setPositiveButton
-                if (!name.endsWith(".py")) name += ".py"
                 if (name.contains('/') || name.contains('\\')) {
                     toast("Invalid name"); return@setPositiveButton
                 }
+                if (!name.endsWith(".py") && !name.endsWith(".js") &&
+                    !name.endsWith(".lua")) {
+                    name += exts[chosen]
+                }
                 saveCurrentFile()
                 val f = File(scriptsDir, name)
-                if (!f.exists()) f.writeText("")
+                if (!f.exists()) f.writeText(starterFor(name))
                 refreshFileList()
                 openFile(f)
                 drawerLayout.closeDrawer(GravityCompat.START)
             }
             .setNegativeButton("Cancel", null)
             .show()
+    }
+
+    private fun starterFor(name: String): String = when {
+        name.endsWith(".js") -> "// JavaScript\nconsole.log(\"Hello from JavaScript!\");\n"
+        name.endsWith(".lua") -> "-- Lua\nprint(\"Hello from Lua!\")\n"
+        else -> "print(\"Hello from Python!\")\n"
     }
 
     private fun showFileOptions(file: File) {
@@ -538,7 +575,10 @@ class MainActivity : AppCompatActivity() {
             .setPositiveButton("Rename") { _, _ ->
                 var name = input.text.toString().trim()
                 if (name.isEmpty()) return@setPositiveButton
-                if (!name.endsWith(".py")) name += ".py"
+                if (!name.endsWith(".py") && !name.endsWith(".js") &&
+                    !name.endsWith(".lua")) {
+                    name += ".py"
+                }
                 val dst = File(scriptsDir, name)
                 if (file.renameTo(dst)) {
                     if (currentFile == file) openFile(dst)
@@ -697,16 +737,30 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun runScript() {
-        if (!pythonReady) { reportStartupError(); return }
         if (running) return
         val file = currentFile ?: return
+        val lang = langOf(file)
+        if (lang == Lang.PYTHON && !pythonReady) { reportStartupError(); return }
         saveCurrentFile()
         running = true
+        cancelRequested = false
         runMenuItem?.isVisible = false
         stopMenuItem?.isVisible = true
         setConsoleCollapsed(false)
         inputQueue.clear()
-        appendConsole("\n▶ Running ${file.name}\n", inputColor)
+        appendConsole("\n▶ Running ${file.name}  (${lang.display})\n", inputColor)
+        when (lang) {
+            Lang.PYTHON -> runPython(file)
+            Lang.JAVASCRIPT -> runInterpreted(file) { src, out, cancel ->
+                ScriptEngines.runJavaScript(src, file.name, out, cancel)
+            }
+            Lang.LUA -> runInterpreted(file) { src, out, cancel ->
+                ScriptEngines.runLua(src, file.name, out, cancel)
+            }
+        }
+    }
+
+    private fun runPython(file: File) {
         val callback = RunCallback()
         Thread({
             try {
@@ -720,11 +774,47 @@ class MainActivity : AppCompatActivity() {
         }, "PyRun").start()
     }
 
+    /** Run a JavaScript/Lua file on a worker thread, streaming output. */
+    private fun runInterpreted(
+        file: File,
+        exec: (String, (String, Boolean) -> Unit, () -> Boolean) -> Unit
+    ) {
+        val source = editor.text.toString()
+        Thread({
+            var ok = true
+            try {
+                exec(
+                    source,
+                    { text, isErr ->
+                        appendConsole(text, if (isErr) stderrColor else stdoutColor)
+                        if (isErr) ok = false
+                    },
+                    { cancelRequested }
+                )
+            } catch (e: Throwable) {
+                ok = false
+                appendConsole("Internal error: $e\n", stderrColor)
+            }
+            runOnUiThread {
+                running = false
+                runMenuItem?.isVisible = true
+                stopMenuItem?.isVisible = false
+                appendConsole(
+                    if (ok) "\n[Finished]\n" else "\n[Finished with errors]\n",
+                    if (ok) inputColor else stderrColor
+                )
+            }
+        }, "ScriptRun").start()
+    }
+
     private fun stopScript() {
         if (!running) return
-        runner.callAttr("stop_script")
-        // If the script is blocked waiting for input(), unblock it with EOF.
-        inputQueue.offer(EOF_SENTINEL)
+        cancelRequested = true
+        if (currentFile?.let { langOf(it) } == Lang.PYTHON) {
+            runner.callAttr("stop_script")
+            // If the script is blocked waiting for input(), unblock it with EOF.
+            inputQueue.offer(EOF_SENTINEL)
+        }
     }
 
     private fun showPlot(path: String) {
@@ -964,13 +1054,16 @@ class MainActivity : AppCompatActivity() {
             if (pythonReady) runner.callAttr("python_version").toString()
             else "Python unavailable (engine failed to start)"
         AlertDialog.Builder(this)
-            .setTitle("Python IDE")
+            .setTitle("Python IDE  v${appVersion()}")
             .setMessage(
-                "$pyVersion (Chaquopy)\n\n" +
+                "$pyVersion (Chaquopy)\n" +
+                    "Languages: Python (.py), JavaScript (.js), Lua (.lua)\n\n" +
                     "Pre-installed: numpy, pandas, matplotlib, pillow, requests\n\n" +
+                    "• Live error checking as you type\n" +
                     "• Run scripts with live output and input()\n" +
                     "• matplotlib plots pop up automatically\n" +
                     "• Install pure-Python packages with pip on device\n" +
+                    "• JavaScript (Rhino, ES6) and Lua (LuaJ) run on-device\n" +
                     "• Files are stored in the app's private storage"
             )
             .setPositiveButton("OK", null)

@@ -8,12 +8,13 @@ object Examples {
 
     fun installIfNeeded(context: Context, scriptsDir: File) {
         val prefs = context.getSharedPreferences("pyide", Context.MODE_PRIVATE)
-        if (prefs.getBoolean("examplesInstalled", false)) return
+        // Bumped to v2 so the JavaScript/Lua samples are added on upgrade.
+        if (prefs.getBoolean("examplesInstalled_v2", false)) return
         for ((name, body) in SCRIPTS) {
             val f = File(scriptsDir, name)
             if (!f.exists()) f.writeText(body)
         }
-        prefs.edit().putBoolean("examplesInstalled", true).apply()
+        prefs.edit().putBoolean("examplesInstalled_v2", true).apply()
     }
 
     private val SCRIPTS = mapOf(
@@ -77,6 +78,40 @@ object Examples {
             print()
             print(joke["setup"])
             print("...", joke["punchline"])
+        """.trimIndent() + "\n",
+
+        "example_javascript.js" to """
+            // JavaScript runs on-device via the Rhino engine (ES6).
+            const nums = [5, 3, 8, 1, 9, 2];
+            nums.sort((a, b) => a - b);
+            console.log("Sorted:", nums.join(", "));
+
+            const squares = nums.map(n => n * n);
+            console.log("Squares:", squares.join(", "));
+
+            const total = nums.reduce((a, b) => a + b, 0);
+            console.log("Sum:", total);
+
+            for (let i = 1; i <= 3; i++) {
+                console.log(`Line ${'$'}{i}`);
+            }
+        """.trimIndent() + "\n",
+
+        "example_lua.lua" to """
+            -- Lua runs on-device via the LuaJ engine.
+            local function factorial(n)
+                if n <= 1 then return 1 end
+                return n * factorial(n - 1)
+            end
+
+            for i = 1, 6 do
+                print(i .. "! = " .. factorial(i))
+            end
+
+            local t = {"apple", "banana", "cherry"}
+            for index, fruit in ipairs(t) do
+                print(index, fruit)
+            end
         """.trimIndent() + "\n",
 
         "example_files.py" to """
