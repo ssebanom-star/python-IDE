@@ -64,6 +64,8 @@ class MainActivity : AppCompatActivity() {
     private val py: Python get() = Python.getInstance()
     private val runner: PyObject get() = py.getModule("ide_runner")
 
+    private val pythonReady: Boolean get() = App.startupError == null
+
     @Volatile private var running = false
     private var runMenuItem: MenuItem? = null
     private var stopMenuItem: MenuItem? = null
@@ -130,10 +132,41 @@ class MainActivity : AppCompatActivity() {
         val toOpen = File(scriptsDir, lastName)
         openFile(if (toOpen.exists()) toOpen else pickAnyFile())
 
+        if (pythonReady) {
+            appendConsole(
+                runner.callAttr("python_version").toString() +
+                    " on Android — ready.\n", stdoutColor
+            )
+        } else {
+            reportStartupError()
+        }
+    }
+
+    /** Shown when the embedded Python interpreter failed to load at startup. */
+    private fun reportStartupError() {
+        val err = App.startupError ?: "Unknown error"
+        consoleScroll.visibility = View.VISIBLE
         appendConsole(
-            runner.callAttr("python_version").toString() +
-                " on Android — ready.\n", stdoutColor
+            "Python failed to start on this device.\n\n$err\n", stderrColor
         )
+        AlertDialog.Builder(this)
+            .setTitle("Python engine could not start")
+            .setMessage(
+                "The Python runtime failed to load, so scripts can't run.\n\n" +
+                    "The details are shown in the console below. Please send " +
+                    "them to the developer.\n\nFirst lines:\n" +
+                    err.lineSequence().take(6).joinToString("\n")
+            )
+            .setPositiveButton("Copy details") { _, _ ->
+                val cm = getSystemService(CLIPBOARD_SERVICE)
+                        as android.content.ClipboardManager
+                cm.setPrimaryClip(
+                    android.content.ClipData.newPlainText("crash", err)
+                )
+                toast("Copied to clipboard")
+            }
+            .setNegativeButton("Close", null)
+            .show()
     }
 
     private fun pickAnyFile(): File {
@@ -425,6 +458,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun runScript() {
+        if (!pythonReady) { reportStartupError(); return }
         if (running) return
         val file = currentFile ?: return
         saveCurrentFile()
@@ -472,6 +506,7 @@ class MainActivity : AppCompatActivity() {
 
     @SuppressLint("SetTextI18n")
     private fun showPipDialog() {
+        if (!pythonReady) { reportStartupError(); return }
         val density = resources.displayMetrics.density
         val pad = (16 * density).toInt()
 
@@ -617,7 +652,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showAbout() {
-        val pyVersion = runner.callAttr("python_version").toString()
+        val pyVersion =
+            if (pythonReady) runner.callAttr("python_version").toString()
+            else "Python unavailable (engine failed to start)"
         AlertDialog.Builder(this)
             .setTitle("Python IDE")
             .setMessage(

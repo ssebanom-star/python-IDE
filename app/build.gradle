@@ -37,6 +37,14 @@ android {
         }
     }
 
+    packaging {
+        jniLibs {
+            // Keep .so files uncompressed and page-aligned so they load on
+            // 16 KB-page devices (required for Android 15+ / S25 Ultra).
+            useLegacyPackaging false
+        }
+    }
+
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
@@ -48,7 +56,9 @@ android {
 
 chaquopy {
     defaultConfig {
-        version "3.12"
+        // Python 3.13 is required for reliable loading of the bundled native
+        // wheels on 16 KB-page devices (e.g. Galaxy S25 Ultra / Android 15).
+        version "3.13"
         pip {
             // Native/scientific stack must be bundled at build time (compiled wheels).
             install "numpy"
