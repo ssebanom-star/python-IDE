@@ -26,6 +26,10 @@
         android:title="@string/menu_new"
         app:showAsAction="never" />
     <item
+        android:id="@+id/action_environments"
+        android:title="@string/menu_environments"
+        app:showAsAction="never" />
+    <item
         android:id="@+id/action_libraries"
         android:title="@string/menu_libraries"
         app:showAsAction="never" />

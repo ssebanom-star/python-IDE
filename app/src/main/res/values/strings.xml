@@ -16,6 +16,7 @@
     <string name="menu_files">Files</string>
     <string name="menu_pip">Pip packages</string>
     <string name="menu_libraries">Install libraries…</string>
+    <string name="menu_environments">Python environments…</string>
     <string name="menu_new">New file</string>
     <string name="menu_text_larger">Text size +</string>
     <string name="menu_text_smaller">Text size −</string>

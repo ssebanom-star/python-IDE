@@ -17,9 +17,14 @@ import sys
 import threading
 import traceback
 
-SITE_DIR = None
+SITE_DIR = None        # the "base" environment's site-packages
 CACHE_DIR = None
 PLOTS_DIR = None
+ENVS_ROOT = None       # parent dir holding named virtual environments
+ACTIVE_ENV = "base"    # name of the currently selected environment
+ACTIVE_SITE = None     # site-packages dir of the active environment (on sys.path)
+
+BASE_ENV = "base"
 
 _run_lock = threading.Lock()
 _run_tid = None
@@ -27,18 +32,132 @@ _run_tid = None
 
 def init(site_dir, cache_dir):
     """Called once at app startup."""
-    global SITE_DIR, CACHE_DIR, PLOTS_DIR
+    global SITE_DIR, CACHE_DIR, PLOTS_DIR, ENVS_ROOT
     SITE_DIR = site_dir
     CACHE_DIR = cache_dir
     PLOTS_DIR = os.path.join(cache_dir, "plots")
-    for d in (SITE_DIR, PLOTS_DIR):
+    ENVS_ROOT = os.path.join(os.path.dirname(site_dir), "envs")
+    for d in (SITE_DIR, PLOTS_DIR, ENVS_ROOT):
         os.makedirs(d, exist_ok=True)
-    if SITE_DIR not in sys.path:
-        sys.path.insert(0, SITE_DIR)
     os.environ.setdefault("TMPDIR", cache_dir)
     os.environ["MPLBACKEND"] = "Agg"
     os.environ["MPLCONFIGDIR"] = os.path.join(cache_dir, "mpl")
     os.environ["HOME"] = cache_dir
+
+    # Restore the environment that was active last time, then put it on the path.
+    saved = _read_active()
+    _activate(saved if _env_exists(saved) else BASE_ENV)
+
+
+# ------------------------------------------------------- virtual environments
+
+def _env_site(name):
+    """site-packages directory for the environment called *name*."""
+    if name == BASE_ENV:
+        return SITE_DIR
+    return os.path.join(ENVS_ROOT, name, "site-packages")
+
+
+def _env_exists(name):
+    return name == BASE_ENV or os.path.isdir(os.path.join(ENVS_ROOT, name))
+
+
+def _state_file():
+    return os.path.join(ENVS_ROOT, "active.txt")
+
+
+def _read_active():
+    try:
+        with open(_state_file(), encoding="utf-8") as f:
+            return f.read().strip() or BASE_ENV
+    except Exception:
+        return BASE_ENV
+
+
+def _activate(name):
+    """Make *name* the active environment: its site-packages is placed first
+    on sys.path and the previous one removed, giving isolated package sets."""
+    global ACTIVE_ENV, ACTIVE_SITE
+    new_site = _env_site(name)
+    os.makedirs(new_site, exist_ok=True)
+    if ACTIVE_SITE and ACTIVE_SITE in sys.path and ACTIVE_SITE != new_site:
+        try:
+            sys.path.remove(ACTIVE_SITE)
+        except ValueError:
+            pass
+    ACTIVE_ENV = name
+    ACTIVE_SITE = new_site
+    if new_site not in sys.path:
+        sys.path.insert(0, new_site)
+    try:
+        with open(_state_file(), "w", encoding="utf-8") as f:
+            f.write(name)
+    except Exception:
+        pass
+    importlib.invalidate_caches()
+
+
+def _valid_env_name(name):
+    return bool(name) and all(
+        c.isalnum() or c in "-_." for c in name) and name not in (".", "..")
+
+
+def list_envs():
+    """JSON list of environments: {name, active, packages}."""
+    names = [BASE_ENV]
+    try:
+        for entry in sorted(os.listdir(ENVS_ROOT)):
+            if os.path.isdir(os.path.join(ENVS_ROOT, entry)):
+                names.append(entry)
+    except Exception:
+        pass
+    out = []
+    for name in names:
+        site = _env_site(name)
+        count = 0
+        try:
+            count = sum(1 for e in os.listdir(site)
+                        if e.endswith(".dist-info"))
+        except Exception:
+            pass
+        out.append({"name": name, "active": name == ACTIVE_ENV,
+                    "packages": count})
+    return json.dumps(out)
+
+
+def create_env(name):
+    if not _valid_env_name(name):
+        return "Invalid name (use letters, digits, - _ .)"
+    if name == BASE_ENV or _env_exists(name):
+        return "An environment with that name already exists"
+    try:
+        os.makedirs(_env_site(name), exist_ok=True)
+        return "ok"
+    except Exception as e:
+        return "Failed: %s" % e
+
+
+def delete_env(name):
+    if name == BASE_ENV:
+        return "The base environment can't be deleted"
+    if name == ACTIVE_ENV:
+        return "Switch to another environment before deleting this one"
+    try:
+        shutil.rmtree(os.path.join(ENVS_ROOT, name), ignore_errors=True)
+        return "ok"
+    except Exception as e:
+        return "Failed: %s" % e
+
+
+def set_active_env(name):
+    if not _env_exists(name):
+        return "No such environment"
+    _activate(name)
+    return "ok"
+
+
+def active_env():
+    return ACTIVE_ENV
 
 
 class _CallbackWriter(io.TextIOBase):
@@ -201,13 +320,14 @@ def stop_script():
 # ---------------------------------------------------------------- pip ----
 
 def pip_install(spec, callback):
-    """Install package(s) into the app's writable site-packages."""
+    """Install package(s) into the active environment's site-packages."""
     old_stdout, old_stderr = sys.stdout, sys.stderr
     try:
         sys.stdout = _CallbackWriter(callback, False)
         sys.stderr = _CallbackWriter(callback, True)
+        callback.onOutput("Environment: %s\n" % ACTIVE_ENV, False)
         from pip._internal.cli.main import main as pip_main
-        args = ["install", "--target", SITE_DIR, "--upgrade",
+        args = ["install", "--target", ACTIVE_SITE, "--upgrade",
                 "--prefer-binary", "--no-cache-dir",
                 "--disable-pip-version-check"] + spec.split()
         rc = pip_main(args)
@@ -232,7 +352,7 @@ def list_packages():
             if not name:
                 continue
             location = str(getattr(dist, "_path", ""))
-            user = SITE_DIR is not None and location.startswith(SITE_DIR)
+            user = ACTIVE_SITE is not None and location.startswith(ACTIVE_SITE)
             key = name.lower()
             # Prefer the user-installed copy when both exist.
             if key not in pkgs or user:
@@ -245,17 +365,17 @@ def list_packages():
 
 
 def uninstall_package(name):
-    """Remove a user-installed package from SITE_DIR using its RECORD."""
-    import importlib.metadata as md
+    """Remove a user-installed package from the active env using its RECORD."""
+    site = ACTIVE_SITE
     canon = name.lower().replace("-", "_")
     removed = False
-    for entry in os.listdir(SITE_DIR):
+    for entry in os.listdir(site):
         if not entry.endswith(".dist-info"):
             continue
         pkg = entry[:-len(".dist-info")].rsplit("-", 1)[0]
         if pkg.lower().replace("-", "_") != canon:
             continue
-        dist_info = os.path.join(SITE_DIR, entry)
+        dist_info = os.path.join(site, entry)
         record = os.path.join(dist_info, "RECORD")
         if os.path.exists(record):
             with open(record, encoding="utf-8") as f:
@@ -263,8 +383,8 @@ def uninstall_package(name):
                     rel = line.split(",")[0].strip()
                     if not rel:
                         continue
-                    target = os.path.normpath(os.path.join(SITE_DIR, rel))
-                    if target.startswith(SITE_DIR) and os.path.isfile(target):
+                    target = os.path.normpath(os.path.join(site, rel))
+                    if target.startswith(site) and os.path.isfile(target):
                         try:
                             os.remove(target)
                         except OSError:
@@ -272,8 +392,8 @@ def uninstall_package(name):
         shutil.rmtree(dist_info, ignore_errors=True)
         removed = True
     # Clean up now-empty directories.
-    for root, dirs, files in os.walk(SITE_DIR, topdown=False):
-        if root != SITE_DIR and not dirs and not files:
+    for root, dirs, files in os.walk(site, topdown=False):
+        if root != site and not dirs and not files:
             try:
                 os.rmdir(root)
             except OSError:

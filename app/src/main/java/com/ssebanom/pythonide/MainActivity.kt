@@ -222,10 +222,14 @@ class MainActivity : AppCompatActivity() {
         supportActionBar?.subtitle = "${currentFile?.name}  ·  v${appVersion()}"
 
         if (pythonReady) {
+            refreshActiveEnv()
+            updateSubtitle()
             appendConsole(
                 "Python IDE v${appVersion()}\n" +
                     runner.callAttr("python_version").toString() +
-                    " on Android — ready.\n", stdoutColor
+                    " on Android — ready.\n" +
+                    "Languages: Python, JavaScript, Lua   ·   env: $activeEnvName\n",
+                stdoutColor
             )
         } else {
             reportStartupError()
@@ -503,7 +507,7 @@ class MainActivity : AppCompatActivity() {
         updateGutter(editor.text)
         applyHighlight()
         updateProblemsBar()
-        supportActionBar?.subtitle = "${file.name}  ·  v${appVersion()}"
+        updateSubtitle()
         getSharedPreferences(PREFS, MODE_PRIVATE).edit()
             .putString("lastFile", file.name).apply()
         uiHandler.removeCallbacks(checkRunnable)
@@ -856,6 +860,151 @@ class MainActivity : AppCompatActivity() {
         "httpx — modern HTTP client" to "httpx"
     )
 
+    // ------------------------------------------------ virtual environments
+
+    private var activeEnvName = "base"
+
+    private fun refreshActiveEnv() {
+        if (!pythonReady) return
+        activeEnvName = try { runner.callAttr("active_env").toString() }
+            catch (e: Throwable) { "base" }
+    }
+
+    private fun showEnvironmentsDialog() {
+        if (!pythonReady) { reportStartupError(); return }
+        Thread({
+            val json = try { runner.callAttr("list_envs").toString() }
+                catch (e: Throwable) { "[]" }
+            runOnUiThread { buildEnvironmentsDialog(json) }
+        }, "EnvList").start()
+    }
+
+    private fun buildEnvironmentsDialog(json: String) {
+        val names = ArrayList<String>()
+        val labels = ArrayList<String>()
+        try {
+            val arr = JSONArray(json)
+            for (i in 0 until arr.length()) {
+                val o = arr.getJSONObject(i)
+                val name = o.getString("name")
+                val active = o.optBoolean("active")
+                val pkgs = o.optInt("packages")
+                names.add(name)
+                labels.add((if (active) "●  " else "○  ") + name +
+                    "   ($pkgs packages)" + if (active) "   — active" else "")
+            }
+        } catch (_: Throwable) {
+        }
+
+        val density = resources.displayMetrics.density
+        val pad = (16 * density).toInt()
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(pad, pad / 2, pad, 0)
+        }
+        root.addView(TextView(this).apply {
+            text = "Each environment has its own installed packages. Tap to " +
+                "switch (scripts and pip use the active one); long-press to " +
+                "delete. numpy/pandas/matplotlib are shared by all."
+            textSize = 12f
+        })
+        val listView = ListView(this)
+        root.addView(listView, LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, (300 * density).toInt()))
+        listView.adapter = ArrayAdapter(
+            this, android.R.layout.simple_list_item_1, labels)
+
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("Python environments")
+            .setView(root)
+            .setNeutralButton("New environment", null)
+            .setNegativeButton("Close", null)
+            .create()
+
+        listView.setOnItemClickListener { _, _, pos, _ ->
+            switchEnv(names[pos])
+            dialog.dismiss()
+        }
+        listView.setOnItemLongClickListener { _, _, pos, _ ->
+            confirmDeleteEnv(names[pos])
+            dialog.dismiss()
+            true
+        }
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
+                dialog.dismiss()
+                promptNewEnv()
+            }
+        }
+        dialog.show()
+    }
+
+    private fun switchEnv(name: String) {
+        Thread({
+            val res = try { runner.callAttr("set_active_env", name).toString() }
+                catch (e: Throwable) { "Failed: $e" }
+            runOnUiThread {
+                if (res == "ok") {
+                    activeEnvName = name
+                    updateSubtitle()
+                    appendConsole("Switched to environment: $name\n", inputColor)
+                    toast("Active environment: $name")
+                } else toast(res)
+            }
+        }, "EnvSwitch").start()
+    }
+
+    private fun promptNewEnv() {
+        val input = EditText(this).apply {
+            hint = "environment name (e.g. web, ml)"
+            inputType = InputType.TYPE_CLASS_TEXT
+        }
+        AlertDialog.Builder(this)
+            .setTitle("New environment")
+            .setView(wrapWithMargin(input))
+            .setPositiveButton("Create") { _, _ ->
+                val name = input.text.toString().trim()
+                if (name.isEmpty()) return@setPositiveButton
+                Thread({
+                    val res = try { runner.callAttr("create_env", name).toString() }
+                        catch (e: Throwable) { "Failed: $e" }
+                    runOnUiThread {
+                        if (res == "ok") {
+                            toast("Created '$name'")
+                            switchEnv(name)
+                        } else toast(res)
+                    }
+                }, "EnvCreate").start()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun confirmDeleteEnv(name: String) {
+        AlertDialog.Builder(this)
+            .setTitle("Delete environment '$name'?")
+            .setMessage("This removes all packages installed in it.")
+            .setPositiveButton("Delete") { _, _ ->
+                Thread({
+                    val res = try { runner.callAttr("delete_env", name).toString() }
+                        catch (e: Throwable) { "Failed: $e" }
+                    runOnUiThread {
+                        toast(if (res == "ok") "Deleted '$name'" else res)
+                    }
+                }, "EnvDelete").start()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun updateSubtitle() {
+        val name = currentFile?.name ?: ""
+        val envPart = if (pythonReady) "  ·  env: $activeEnvName" else ""
+        supportActionBar?.subtitle = "$name$envPart  ·  v${appVersion()}"
+    }
+
+    // ------------------------------------------------------------ libraries
+
     private fun showLibrariesDialog() {
         if (!pythonReady) { reportStartupError(); return }
         // Discover what's already installed so those entries can be pre-ticked.
@@ -923,8 +1072,9 @@ class MainActivity : AppCompatActivity() {
             LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
         root.addView(row)
         val note = TextView(this).apply {
-            text = "Pure-Python packages install directly on the device. " +
-                "numpy, pandas, matplotlib, pillow and requests are pre-installed. " +
+            text = "Installs into the active environment ($activeEnvName). " +
+                "Pure-Python packages install directly on the device; " +
+                "numpy, pandas, matplotlib, pillow and requests are shared. " +
                 "Long-press a package you installed to uninstall it."
             textSize = 12f
         }
@@ -1036,6 +1186,7 @@ class MainActivity : AppCompatActivity() {
             R.id.action_files -> drawerLayout.openDrawer(GravityCompat.START)
             R.id.action_save -> { saveCurrentFile(); toast("Saved") }
             R.id.action_new -> promptNewFile()
+            R.id.action_environments -> showEnvironmentsDialog()
             R.id.action_libraries -> showLibrariesDialog()
             R.id.action_pip -> showPipDialog()
             R.id.action_text_larger -> applyTextSize(
@@ -1057,9 +1208,11 @@ class MainActivity : AppCompatActivity() {
             .setTitle("Python IDE  v${appVersion()}")
             .setMessage(
                 "$pyVersion (Chaquopy)\n" +
-                    "Languages: Python (.py), JavaScript (.js), Lua (.lua)\n\n" +
+                    "Languages: Python (.py), JavaScript (.js), Lua (.lua)\n" +
+                    "Active environment: $activeEnvName\n\n" +
                     "Pre-installed: numpy, pandas, matplotlib, pillow, requests\n\n" +
                     "• Live error checking as you type\n" +
+                    "• Python virtual environments (isolated package sets)\n" +
                     "• Run scripts with live output and input()\n" +
                     "• matplotlib plots pop up automatically\n" +
                     "• Install pure-Python packages with pip on device\n" +
