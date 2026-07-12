@@ -136,12 +136,13 @@ class MainActivity : AppCompatActivity() {
             ContextCompat.getColor(this, R.color.syn_self)
         )
 
+        // scriptsDir must be initialised before setupDrawer(), which lists it.
+        scriptsDir = File(filesDir, "scripts").apply { mkdirs() }
+        Examples.installIfNeeded(this, scriptsDir)
+
         setupEditor()
         setupConsole()
         setupDrawer()
-
-        scriptsDir = File(filesDir, "scripts").apply { mkdirs() }
-        Examples.installIfNeeded(this, scriptsDir)
 
         val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
         applyTextSize(prefs.getFloat("textSize", 14f))
