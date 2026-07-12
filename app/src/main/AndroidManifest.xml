@@ -10,7 +10,8 @@
         android:icon="@mipmap/ic_launcher"
         android:theme="@style/Theme.PythonIDE"
         android:supportsRtl="true"
-        android:largeHeap="true">
+        android:largeHeap="true"
+        android:usesCleartextTraffic="true">
 
         <activity
             android:name=".MainActivity"
@@ -28,6 +29,12 @@
             android:exported="false"
             android:windowSoftInputMode="adjustResize"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|uiMode" />
+
+        <activity
+            android:name=".DesktopActivity"
+            android:exported="false"
+            android:screenOrientation="sensorLandscape"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|keyboard|uiMode" />
 
         <activity
             android:name=".CrashActivity"

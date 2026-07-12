@@ -67,6 +67,15 @@ class ContainerActivity : AppCompatActivity() {
             })
         }
         addAction("Set up / Reset") { confirmSetup() }
+        addAction("🖥 Install Desktop") { installDesktop() }
+        addAction("🖥 Start Desktop") { startDesktop() }
+        addAction("🖥 Open Desktop") {
+            startActivity(android.content.Intent(this, DesktopActivity::class.java))
+        }
+        addAction("🖥 Stop Desktop") {
+            ContainerManager.stopDesktop()
+            append("\n[desktop stop requested]\n")
+        }
         addAction("apk update") { runInContainer("apk update") }
         addAction("Node.js") { installPkg("nodejs npm") }
         addAction("Python3") { installPkg("python3 py3-pip") }
@@ -144,7 +153,10 @@ class ContainerActivity : AppCompatActivity() {
                     "Tap \"Set up / Reset\" to unpack it (about 5 MB, one time).\n"
             )
         } else {
-            append("Container ready. Try: node -v   or   apk add nodejs && node -v\n")
+            append(
+                "Container ready. Try: node -v   or   apk add nodejs && node -v\n" +
+                    "For a full Linux desktop: 🖥 Install Desktop → 🖥 Start Desktop.\n"
+            )
         }
     }
 
@@ -176,6 +188,64 @@ class ContainerActivity : AppCompatActivity() {
 
     private fun installPkg(pkgs: String) {
         runInContainer("apk add $pkgs && echo '--- installed: $pkgs ---'")
+    }
+
+    // ------------------------------------------------------ desktop (GUI)
+
+    private fun installDesktop() {
+        if (ContainerManager.desktopInstalled(this)) {
+            append("\nDesktop is already installed — tap \"Start Desktop\".\n")
+            return
+        }
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Install Linux desktop (XFCE)")
+            .setMessage(
+                "Downloads the XFCE desktop, VNC server and noVNC viewer " +
+                    "into the container (roughly 200–300 MB). Continue?"
+            )
+            .setPositiveButton("Install") { _, _ ->
+                runInContainer(
+                    "apk update && apk add ${ContainerManager.DESKTOP_PACKAGES} " +
+                        "&& echo '--- desktop installed: tap Start Desktop ---'"
+                )
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun startDesktop() {
+        if (!ContainerManager.isInstalled(this)) {
+            append("\nContainer isn't set up yet — tap \"Set up / Reset\" first.\n")
+            return
+        }
+        if (!ContainerManager.desktopInstalled(this)) {
+            append("\nDesktop isn't installed yet — tap \"Install Desktop\" first.\n")
+            return
+        }
+        if (ContainerManager.desktopRunning()) {
+            append("\nDesktop already running — tap \"Open Desktop\".\n")
+            startActivity(android.content.Intent(this, DesktopActivity::class.java))
+            return
+        }
+        // Render the desktop at half the physical resolution (landscape),
+        // capped for VNC performance; even numbers keep encoders happy.
+        val dm = resources.displayMetrics
+        var w = maxOf(dm.widthPixels, dm.heightPixels)
+        var h = minOf(dm.widthPixels, dm.heightPixels)
+        val cap = 1600
+        if (w > cap) { h = h * cap / w; w = cap }
+        w = w and 1.inv(); h = h and 1.inv()  // force even dimensions
+        append("\n=== Starting desktop (${w}x${h}) — first start takes ~20–30 s ===\n")
+        val ok = ContainerManager.startDesktop(this, scriptsDir, w, h) { append(it) }
+        if (ok) {
+            append("Opening desktop view in 10 s… (or tap \"Open Desktop\")\n")
+            output.postDelayed({
+                if (!isFinishing && ContainerManager.desktopRunning()) {
+                    startActivity(
+                        android.content.Intent(this, DesktopActivity::class.java))
+                }
+            }, 10_000)
+        }
     }
 
     private fun runCurrentFile(name: String) {
