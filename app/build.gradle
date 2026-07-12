@@ -15,8 +15,8 @@ android {
         // binaries from its private storage (Android 10+ blocks this for
         // apps targeting API 29+), which is required for the Linux container.
         targetSdk 28
-        versionCode 7
-        versionName "2.0"
+        versionCode 8
+        versionName "2.1"
 
         ndk {
             // Samsung Galaxy S25 Ultra is arm64; keeping a single ABI halves APK size.
