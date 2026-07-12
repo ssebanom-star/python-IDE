@@ -1,0 +1,7 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <!-- Python-esque two-tone chevron + prompt -->
+    <path android:fillColor="#FFD43B" android:pathData="M34,38l14,16l-14,16l6,6l20,-22l-20,-22z"/>
+    <path android:fillColor="#4B8BBE" android:pathData="M58,70h20v8h-20z"/>
+</vector>

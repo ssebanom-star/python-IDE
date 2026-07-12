@@ -1,0 +1,71 @@
+plugins {
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
+    id 'com.chaquo.python'
+}
+
+android {
+    namespace 'com.ssebanom.pythonide'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.ssebanom.pythonide"
+        minSdk 26
+        targetSdk 34
+        versionCode 1
+        versionName "1.0"
+
+        ndk {
+            // Samsung Galaxy S25 Ultra is arm64; keeping a single ABI halves APK size.
+            abiFilters "arm64-v8a"
+        }
+    }
+
+    signingConfigs {
+        release {
+            storeFile file("../keystore/pythonide.jks")
+            storePassword "pythonide"
+            keyAlias "pythonide"
+            keyPassword "pythonide"
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.release
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    kotlinOptions {
+        jvmTarget = '17'
+    }
+}
+
+chaquopy {
+    defaultConfig {
+        version "3.12"
+        pip {
+            // Native/scientific stack must be bundled at build time (compiled wheels).
+            install "numpy"
+            install "pandas"
+            install "matplotlib"
+            install "pillow"
+            install "requests"
+            // Bundle pip itself so the app can install pure-Python packages at runtime.
+            install "pip"
+            install "setuptools"
+        }
+    }
+}
+
+dependencies {
+    implementation 'androidx.core:core-ktx:1.13.1'
+    implementation 'androidx.appcompat:appcompat:1.7.0'
+    implementation 'com.google.android.material:material:1.12.0'
+    implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
+}

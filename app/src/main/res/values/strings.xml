@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Python IDE</string>
+    <string name="console">CONSOLE</string>
+    <string name="clear_console">Clear console</string>
+    <string name="toggle_console">Show or hide console</string>
+    <string name="input_hint">Program is waiting for input…</string>
+    <string name="input_chevron">&gt;&gt;&gt;</string>
+    <string name="send_input">Send input</string>
+    <string name="files">Files</string>
+    <string name="new_file">＋ New file</string>
+    <string name="editor_hint"># Write Python here, then press ▶</string>
+    <string name="menu_run">Run</string>
+    <string name="menu_stop">Stop</string>
+    <string name="menu_save">Save</string>
+    <string name="menu_files">Files</string>
+    <string name="menu_pip">Pip packages</string>
+    <string name="menu_new">New file</string>
+    <string name="menu_text_larger">Text size +</string>
+    <string name="menu_text_smaller">Text size −</string>
+    <string name="menu_about">About</string>
+</resources>

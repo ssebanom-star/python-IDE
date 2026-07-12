@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.PythonIDE" parent="Theme.Material3.Dark.NoActionBar">
+        <item name="colorPrimary">@color/accent</item>
+        <item name="colorOnPrimary">#0B0C0F</item>
+        <item name="android:statusBarColor">@color/toolbar_bg</item>
+        <item name="android:navigationBarColor">@color/console_bg</item>
+        <item name="android:colorBackground">@color/editor_bg</item>
+    </style>
+
+    <style name="ToolbarTitle" parent="TextAppearance.Material3.TitleMedium">
+        <item name="android:textColor">#E8EAED</item>
+    </style>
+
+    <style name="ToolbarSubtitle" parent="TextAppearance.Material3.BodySmall">
+        <item name="android:textColor">#9AA0A6</item>
+    </style>
+</resources>
