@@ -12,8 +12,8 @@ android {
         applicationId "com.ssebanom.pythonide"
         minSdk 26
         targetSdk 34
-        versionCode 3
-        versionName "1.2"
+        versionCode 4
+        versionName "1.3"
 
         ndk {
             // Samsung Galaxy S25 Ultra is arm64; keeping a single ABI halves APK size.
@@ -69,6 +69,8 @@ chaquopy {
             // Bundle pip itself so the app can install pure-Python packages at runtime.
             install "pip"
             install "setuptools"
+            // Powers the live, in-editor error/warning checking.
+            install "pyflakes"
         }
     }
 }

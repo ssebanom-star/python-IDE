@@ -2,6 +2,7 @@ package com.ssebanom.pythonide
 
 import android.annotation.SuppressLint
 import android.graphics.BitmapFactory
+import android.graphics.Typeface
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -12,10 +13,13 @@ import android.text.SpannableStringBuilder
 import android.text.Spanned
 import android.text.TextWatcher
 import android.text.style.ForegroundColorSpan
+import android.text.style.StyleSpan
+import android.util.TypedValue
 import android.view.Gravity
 import android.view.Menu
 import android.view.MenuItem
 import android.view.View
+import android.view.WindowManager
 import android.view.inputmethod.EditorInfo
 import android.widget.ArrayAdapter
 import android.widget.EditText
@@ -48,12 +52,16 @@ class MainActivity : AppCompatActivity() {
     private lateinit var drawerLayout: DrawerLayout
     private lateinit var toolbar: MaterialToolbar
     private lateinit var editor: EditText
+    private lateinit var editorScroll: ScrollView
     private lateinit var gutter: TextView
     private lateinit var consoleText: TextView
     private lateinit var consoleScroll: ScrollView
+    private lateinit var consolePanel: LinearLayout
     private lateinit var inputRow: LinearLayout
     private lateinit var inputField: EditText
     private lateinit var fileListView: ListView
+    private lateinit var problemsBar: LinearLayout
+    private lateinit var problemsText: TextView
 
     private lateinit var highlighter: PythonHighlighter
     private val uiHandler = Handler(Looper.getMainLooper())
@@ -74,6 +82,27 @@ class MainActivity : AppCompatActivity() {
     private var lastLineCount = -1
     private var internalEdit = false
     private var pendingIndentPos = -1
+
+    // Live error checking.
+    private data class Problem(
+        val line: Int, val col: Int, val endLine: Int, val endCol: Int,
+        val message: String, val severity: String
+    )
+
+    private val problems = ArrayList<Problem>()
+    private val problemSpans = ArrayList<WavyUnderlineSpan>()
+    private var gutterLineCount = 1
+    private var checkSeq = 0
+    private var nextProblemIdx = 0
+    private var errorColor = 0
+    private var warnColor = 0
+    private var okColor = 0
+    private var wavyAmp = 0f
+    private var wavyStroke = 0f
+    private var wavyLen = 0f
+    private var consoleCollapsed = false
+
+    private val checkRunnable = Runnable { runCheck() }
 
     // Console output is buffered and flushed to the UI at ~30fps to keep
     // fast print loops from overwhelming the main thread.
@@ -113,18 +142,37 @@ class MainActivity : AppCompatActivity() {
         drawerLayout = findViewById(R.id.drawerLayout)
         toolbar = findViewById(R.id.toolbar)
         editor = findViewById(R.id.editor)
+        editorScroll = findViewById(R.id.editorScroll)
         gutter = findViewById(R.id.gutter)
         consoleText = findViewById(R.id.consoleText)
         consoleScroll = findViewById(R.id.consoleScroll)
+        consolePanel = findViewById(R.id.consolePanel)
         inputRow = findViewById(R.id.inputRow)
         inputField = findViewById(R.id.inputField)
         fileListView = findViewById(R.id.fileList)
+        problemsBar = findViewById(R.id.problemsBar)
+        problemsText = findViewById(R.id.problemsText)
 
         setSupportActionBar(toolbar)
+
+        // Keep the keyboard from resizing/scrolling the editor above it; the
+        // input bar temporarily switches to adjustResize while a script waits
+        // for input() so it stays reachable above the keyboard.
+        window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING)
 
         stdoutColor = ContextCompat.getColor(this, R.color.console_stdout)
         stderrColor = ContextCompat.getColor(this, R.color.console_stderr)
         inputColor = ContextCompat.getColor(this, R.color.console_input)
+        errorColor = ContextCompat.getColor(this, R.color.problem_error)
+        warnColor = ContextCompat.getColor(this, R.color.problem_warning)
+        okColor = ContextCompat.getColor(this, R.color.problem_ok)
+
+        val dm = resources.displayMetrics
+        wavyAmp = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 2f, dm)
+        wavyStroke = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 1.3f, dm)
+        wavyLen = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 5f, dm)
+
+        problemsBar.setOnClickListener { jumpToProblem() }
 
         highlighter = PythonHighlighter(
             ContextCompat.getColor(this, R.color.syn_keyword),
@@ -166,7 +214,7 @@ class MainActivity : AppCompatActivity() {
     /** Shown when the embedded Python interpreter failed to load at startup. */
     private fun reportStartupError() {
         val err = App.startupError ?: "Unknown error"
-        consoleScroll.visibility = View.VISIBLE
+        setConsoleCollapsed(false)
         appendConsole(
             "Python failed to start on this device.\n\n$err\n", stderrColor
         )
@@ -220,6 +268,8 @@ class MainActivity : AppCompatActivity() {
                 updateGutter(s)
                 uiHandler.removeCallbacks(highlightRunnable)
                 uiHandler.postDelayed(highlightRunnable, 160)
+                uiHandler.removeCallbacks(checkRunnable)
+                uiHandler.postDelayed(checkRunnable, 500)
             }
         })
     }
@@ -241,10 +291,33 @@ class MainActivity : AppCompatActivity() {
     private fun updateGutter(s: CharSequence) {
         var lines = 1
         for (ch in s) if (ch == '\n') lines++
-        if (lines != lastLineCount) {
-            lastLineCount = lines
-            gutter.text = (1..lines).joinToString("\n")
+        gutterLineCount = lines
+        lastLineCount = lines
+        renderGutter()
+    }
+
+    /** Rebuild the gutter, colouring line numbers that have problems. */
+    private fun renderGutter() {
+        val lines = gutterLineCount
+        val severityByLine = HashMap<Int, String>()
+        for (p in problems) {
+            val existing = severityByLine[p.line]
+            if (existing != "error") severityByLine[p.line] = p.severity
         }
+        val sb = SpannableStringBuilder()
+        for (i in 1..lines) {
+            val start = sb.length
+            sb.append(i.toString())
+            severityByLine[i]?.let { sev ->
+                val color = if (sev == "error") errorColor else warnColor
+                sb.setSpan(ForegroundColorSpan(color), start, sb.length,
+                    Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                sb.setSpan(StyleSpan(Typeface.BOLD), start, sb.length,
+                    Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+            }
+            if (i < lines) sb.append("\n")
+        }
+        gutter.text = sb
     }
 
     private fun applyTextSize(sp: Float) {
@@ -252,6 +325,118 @@ class MainActivity : AppCompatActivity() {
         gutter.textSize = sp
         getSharedPreferences(PREFS, MODE_PRIVATE).edit()
             .putFloat("textSize", sp).apply()
+    }
+
+    // -------------------------------------------------- live error checking
+
+    private fun runCheck() {
+        if (!pythonReady) return
+        val file = currentFile
+        if (file == null || !file.name.endsWith(".py")) {
+            applyProblems(emptyList())
+            return
+        }
+        val source = editor.text.toString()
+        val seq = ++checkSeq
+        Thread({
+            val json = try {
+                runner.callAttr("check_code", source).toString()
+            } catch (e: Throwable) {
+                "[]"
+            }
+            val parsed = parseProblems(json)
+            runOnUiThread { if (seq == checkSeq) applyProblems(parsed) }
+        }, "PyCheck").start()
+    }
+
+    private fun parseProblems(json: String): List<Problem> {
+        val out = ArrayList<Problem>()
+        try {
+            val arr = JSONArray(json)
+            for (i in 0 until arr.length()) {
+                val o = arr.getJSONObject(i)
+                out.add(
+                    Problem(
+                        o.optInt("line", 1), o.optInt("col", 1),
+                        o.optInt("endLine", 1), o.optInt("endCol", 1),
+                        o.optString("message", ""), o.optString("severity", "error")
+                    )
+                )
+            }
+        } catch (_: Throwable) {
+        }
+        return out
+    }
+
+    private fun applyProblems(list: List<Problem>) {
+        val text = editor.text
+        for (span in problemSpans) text.removeSpan(span)
+        problemSpans.clear()
+        problems.clear()
+        problems.addAll(list)
+        nextProblemIdx = 0
+
+        for (p in list) {
+            val (start, end) = lineCharRange(text, p.line)
+            if (start in 0..text.length && end in start..text.length && end > start) {
+                val color = if (p.severity == "error") errorColor else warnColor
+                val span = WavyUnderlineSpan(color, wavyAmp, wavyStroke, wavyLen)
+                text.setSpan(span, start, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+                problemSpans.add(span)
+            }
+        }
+        renderGutter()
+        updateProblemsBar()
+    }
+
+    /** Character range covering 1-based [line] (excluding its newline). */
+    private fun lineCharRange(text: CharSequence, line: Int): Pair<Int, Int> {
+        var idx = 0
+        var current = 1
+        while (current < line && idx < text.length) {
+            if (text[idx] == '\n') current++
+            idx++
+        }
+        val start = idx
+        var end = idx
+        while (end < text.length && text[end] != '\n') end++
+        return Pair(start, end)
+    }
+
+    private fun updateProblemsBar() {
+        if (problems.isEmpty()) {
+            problemsText.setTextColor(okColor)
+            problemsText.text = "✓ No problems"
+            return
+        }
+        val errors = problems.count { it.severity == "error" }
+        val warnings = problems.size - errors
+        val first = problems.minByOrNull { it.line }!!
+        val counts = buildString {
+            if (errors > 0) append("⛔ $errors")
+            if (warnings > 0) {
+                if (isNotEmpty()) append("   ")
+                append("⚠ $warnings")
+            }
+        }
+        problemsText.setTextColor(if (errors > 0) errorColor else warnColor)
+        problemsText.text = "$counts    Line ${first.line}: ${first.message}"
+    }
+
+    private fun jumpToProblem() {
+        if (problems.isEmpty()) return
+        val ordered = problems.sortedBy { it.line }
+        val p = ordered[nextProblemIdx % ordered.size]
+        nextProblemIdx++
+        val (start, _) = lineCharRange(editor.text, p.line)
+        val pos = start.coerceIn(0, editor.text.length)
+        editor.requestFocus()
+        editor.setSelection(pos)
+        editor.post {
+            val layout = editor.layout ?: return@post
+            val y = layout.getLineTop(layout.getLineForOffset(pos))
+            editorScroll.smoothScrollTo(0, (y - 120).coerceAtLeast(0))
+        }
     }
 
     // ------------------------------------------------------------ files
@@ -289,11 +474,18 @@ class MainActivity : AppCompatActivity() {
         editor.setText(if (file.exists()) file.readText() else "")
         internalEdit = false
         lastLineCount = -1
+        // Clear stale markers from the previous file before re-checking.
+        for (span in problemSpans) editor.text.removeSpan(span)
+        problemSpans.clear()
+        problems.clear()
         updateGutter(editor.text)
         highlighter.highlight(editor.text)
-        supportActionBar?.subtitle = file.name
+        updateProblemsBar()
+        supportActionBar?.subtitle = "${file.name}  ·  v${appVersion()}"
         getSharedPreferences(PREFS, MODE_PRIVATE).edit()
             .putString("lastFile", file.name).apply()
+        uiHandler.removeCallbacks(checkRunnable)
+        uiHandler.postDelayed(checkRunnable, 300)
     }
 
     private fun saveCurrentFile() {
@@ -392,9 +584,13 @@ class MainActivity : AppCompatActivity() {
             consoleText.text = ""
         }
         findViewById<View>(R.id.btnToggleConsole).setOnClickListener {
-            consoleScroll.visibility =
-                if (consoleScroll.visibility == View.VISIBLE) View.GONE else View.VISIBLE
+            setConsoleCollapsed(!consoleCollapsed)
         }
+        // Restore the collapsed/expanded state from last session.
+        setConsoleCollapsed(
+            getSharedPreferences(PREFS, MODE_PRIVATE)
+                .getBoolean("consoleCollapsed", false)
+        )
         val send = {
             val line = inputField.text.toString()
             inputField.setText("")
@@ -407,6 +603,18 @@ class MainActivity : AppCompatActivity() {
                 send(); true
             } else false
         }
+    }
+
+    /** Collapse the console to just its header bar, or expand it again. */
+    private fun setConsoleCollapsed(collapsed: Boolean) {
+        consoleCollapsed = collapsed
+        consoleScroll.visibility = if (collapsed) View.GONE else View.VISIBLE
+        if (collapsed) inputRow.visibility = View.GONE
+        val btn = findViewById<android.widget.ImageButton>(R.id.btnToggleConsole)
+        // The chevron points up to collapse, down to expand.
+        btn.rotation = if (collapsed) 180f else 0f
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+            .putBoolean("consoleCollapsed", collapsed).apply()
     }
 
     private fun appendConsole(text: String, color: Int) {
@@ -451,12 +659,20 @@ class MainActivity : AppCompatActivity() {
 
         fun onInputRequest(prompt: String): String? {
             runOnUiThread {
+                if (consoleCollapsed) setConsoleCollapsed(false)
                 if (prompt.isNotEmpty()) appendConsole(prompt, stdoutColor)
+                // Let the window resize so the input bar rides above the keyboard.
+                window.setSoftInputMode(
+                    WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
                 inputRow.visibility = View.VISIBLE
                 inputField.requestFocus()
             }
             val line = inputQueue.take()
-            runOnUiThread { inputRow.visibility = View.GONE }
+            runOnUiThread {
+                inputRow.visibility = View.GONE
+                window.setSoftInputMode(
+                    WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING)
+            }
             return if (line == EOF_SENTINEL) null else line
         }
 
@@ -470,6 +686,8 @@ class MainActivity : AppCompatActivity() {
                 runMenuItem?.isVisible = true
                 stopMenuItem?.isVisible = false
                 inputRow.visibility = View.GONE
+                window.setSoftInputMode(
+                    WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING)
                 appendConsole(
                     if (ok) "\n[Finished]\n" else "\n[Finished with errors]\n",
                     if (ok) inputColor else stderrColor
@@ -486,7 +704,7 @@ class MainActivity : AppCompatActivity() {
         running = true
         runMenuItem?.isVisible = false
         stopMenuItem?.isVisible = true
-        consoleScroll.visibility = View.VISIBLE
+        setConsoleCollapsed(false)
         inputQueue.clear()
         appendConsole("\n▶ Running ${file.name}\n", inputColor)
         val callback = RunCallback()
@@ -524,6 +742,74 @@ class MainActivity : AppCompatActivity() {
     }
 
     // ------------------------------------------------------------ pip
+
+    // A curated catalogue of popular, pure-Python packages that install
+    // reliably on-device (label to pip name). Native packages are pre-bundled.
+    private val libraryCatalog = listOf(
+        "rich — pretty terminal output" to "rich",
+        "requests — HTTP client" to "requests",
+        "beautifulsoup4 — HTML/XML parsing" to "beautifulsoup4",
+        "sympy — symbolic mathematics" to "sympy",
+        "PyYAML — YAML files" to "pyyaml",
+        "python-dateutil — date utilities" to "python-dateutil",
+        "tabulate — pretty tables" to "tabulate",
+        "colorama — coloured text" to "colorama",
+        "tqdm — progress bars" to "tqdm",
+        "more-itertools — iterator helpers" to "more-itertools",
+        "click — build CLIs" to "click",
+        "Jinja2 — templating" to "jinja2",
+        "Faker — fake data" to "faker",
+        "emoji — emoji support" to "emoji",
+        "humanize — human-readable values" to "humanize",
+        "pyfiglet — ASCII-art text" to "pyfiglet",
+        "wikipedia — Wikipedia API" to "wikipedia",
+        "httpx — modern HTTP client" to "httpx"
+    )
+
+    private fun showLibrariesDialog() {
+        if (!pythonReady) { reportStartupError(); return }
+        // Discover what's already installed so those entries can be pre-ticked.
+        Thread({
+            val installed = HashSet<String>()
+            try {
+                val arr = JSONArray(runner.callAttr("list_packages").toString())
+                for (i in 0 until arr.length()) {
+                    installed.add(arr.getJSONObject(i).getString("name")
+                        .lowercase().replace("_", "-"))
+                }
+            } catch (_: Throwable) {
+            }
+            runOnUiThread { buildLibrariesDialog(installed) }
+        }, "LibList").start()
+    }
+
+    private fun buildLibrariesDialog(installed: Set<String>) {
+        val labels = libraryCatalog.map { (label, pip) ->
+            if (installed.contains(pip.lowercase())) "✓ $label" else label
+        }.toTypedArray()
+        val checked = BooleanArray(libraryCatalog.size) { i ->
+            installed.contains(libraryCatalog[i].second.lowercase())
+        }
+        val preinstalled = checked.copyOf()
+
+        AlertDialog.Builder(this)
+            .setTitle("Install libraries")
+            .setMultiChoiceItems(labels, checked) { _, which, isChecked ->
+                checked[which] = isChecked
+            }
+            .setPositiveButton("Install selected") { _, _ ->
+                val specs = libraryCatalog.filterIndexed { i, _ ->
+                    checked[i] && !preinstalled[i]
+                }.map { it.second }
+                if (specs.isEmpty()) {
+                    toast("Nothing new selected")
+                } else {
+                    pipInstall(specs.joinToString(" "))
+                }
+            }
+            .setNegativeButton("Close", null)
+            .show()
+    }
 
     @SuppressLint("SetTextI18n")
     private fun showPipDialog() {
@@ -625,7 +911,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun pipInstall(spec: String) {
-        consoleScroll.visibility = View.VISIBLE
+        setConsoleCollapsed(false)
         appendConsole("\n▶ pip install $spec\n", inputColor)
         val callback = RunCallback()
         Thread({
@@ -660,6 +946,7 @@ class MainActivity : AppCompatActivity() {
             R.id.action_files -> drawerLayout.openDrawer(GravityCompat.START)
             R.id.action_save -> { saveCurrentFile(); toast("Saved") }
             R.id.action_new -> promptNewFile()
+            R.id.action_libraries -> showLibrariesDialog()
             R.id.action_pip -> showPipDialog()
             R.id.action_text_larger -> applyTextSize(
                 (editor.textSize / resources.displayMetrics.scaledDensity) + 1f)

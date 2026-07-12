@@ -71,6 +71,34 @@
         </ScrollView>
 
         <LinearLayout
+            android:id="@+id/problemsBar"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:background="@color/problems_bg"
+            android:clickable="true"
+            android:focusable="true"
+            android:foreground="?attr/selectableItemBackground"
+            android:paddingStart="12dp"
+            android:paddingEnd="12dp"
+            android:paddingTop="6dp"
+            android:paddingBottom="6dp">
+
+            <TextView
+                android:id="@+id/problemsText"
+                android:layout_width="0dp"
+                android:layout_weight="1"
+                android:layout_height="wrap_content"
+                android:textSize="12sp"
+                android:maxLines="1"
+                android:ellipsize="end"
+                android:fontFamily="monospace"
+                android:textColor="@color/problem_ok"
+                android:text="✓ No problems" />
+        </LinearLayout>
+
+        <LinearLayout
             android:id="@+id/consolePanel"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"

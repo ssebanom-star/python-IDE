@@ -22,5 +22,10 @@
     <color name="syn_decorator">#B3AE60</color>
     <color name="syn_self">#94558D</color>
 
+    <color name="problems_bg">#191A1D</color>
+    <color name="problem_ok">#6AAB73</color>
+    <color name="problem_error">#F26D6D</color>
+    <color name="problem_warning">#E2B93B</color>
+
     <color name="ic_launcher_background">#1B2B34</color>
 </resources>

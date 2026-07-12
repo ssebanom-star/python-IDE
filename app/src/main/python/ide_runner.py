@@ -284,3 +284,72 @@ def uninstall_package(name):
 
 def python_version():
     return "Python %s" % sys.version.split()[0]
+
+
+# ---------------------------------------------------------- live checking
+
+def check_code(source):
+    """Return a JSON list of problems for live, in-editor error checking.
+
+    Each item: {line, col, endLine, endCol, message, severity}. Syntax errors
+    come from compile(); pyflakes adds semantic warnings (undefined names,
+    unused imports, redefinitions, ...) when the code parses cleanly.
+    """
+    problems = []
+    try:
+        compile(source, "<editor>", "exec")
+    except SyntaxError as e:
+        line = e.lineno or 1
+        col = e.offset or 1
+        problems.append({
+            "line": line,
+            "col": col,
+            "endLine": getattr(e, "end_lineno", None) or line,
+            "endCol": getattr(e, "end_offset", None) or (col + 1),
+            "message": e.msg or "Syntax error",
+            "severity": "error",
+        })
+        return json.dumps(problems)
+    except Exception:
+        return json.dumps(problems)
+
+    # Code parses; add pyflakes warnings if available.
+    try:
+        from pyflakes import api as pf_api
+
+        collector = problems
+
+        class _Reporter:
+            def unexpectedError(self, filename, msg):
+                pass
+
+            def syntaxError(self, filename, msg, lineno, offset, text):
+                collector.append({
+                    "line": lineno or 1,
+                    "col": offset or 1,
+                    "endLine": lineno or 1,
+                    "endCol": (offset or 1) + 1,
+                    "message": str(msg),
+                    "severity": "error",
+                })
+
+            def flake(self, message):
+                col = getattr(message, "col", 0) or 0
+                try:
+                    text = message.message % message.message_args
+                except Exception:
+                    text = str(message.message)
+                collector.append({
+                    "line": message.lineno,
+                    "col": col + 1,
+                    "endLine": message.lineno,
+                    "endCol": col + 2,
+                    "message": text,
+                    "severity": "warning",
+                })
+
+        pf_api.check(source, "<editor>", reporter=_Reporter())
+    except Exception:
+        pass
+
+    return json.dumps(problems)
