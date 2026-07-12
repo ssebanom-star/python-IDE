@@ -91,6 +91,23 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        try {
+            buildUi()
+        } catch (t: Throwable) {
+            // Anything that goes wrong while building the screen is shown
+            // rather than silently killing the app.
+            startActivity(android.content.Intent(this, CrashActivity::class.java)
+                .putExtra(CrashActivity.EXTRA_TRACE,
+                    "MainActivity failed to start:\n" + App.stackToString(t)))
+            finish()
+        }
+    }
+
+    private fun appVersion(): String = runCatching {
+        packageManager.getPackageInfo(packageName, 0).versionName ?: "?"
+    }.getOrDefault("?")
+
+    private fun buildUi() {
         setContentView(R.layout.activity_main)
 
         drawerLayout = findViewById(R.id.drawerLayout)
@@ -132,9 +149,12 @@ class MainActivity : AppCompatActivity() {
         val toOpen = File(scriptsDir, lastName)
         openFile(if (toOpen.exists()) toOpen else pickAnyFile())
 
+        supportActionBar?.subtitle = "${currentFile?.name}  ·  v${appVersion()}"
+
         if (pythonReady) {
             appendConsole(
-                runner.callAttr("python_version").toString() +
+                "Python IDE v${appVersion()}\n" +
+                    runner.callAttr("python_version").toString() +
                     " on Android — ready.\n", stdoutColor
             )
         } else {
