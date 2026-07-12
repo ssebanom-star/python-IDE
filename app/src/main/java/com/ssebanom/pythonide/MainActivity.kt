@@ -1186,6 +1186,9 @@ class MainActivity : AppCompatActivity() {
             R.id.action_files -> drawerLayout.openDrawer(GravityCompat.START)
             R.id.action_save -> { saveCurrentFile(); toast("Saved") }
             R.id.action_new -> promptNewFile()
+            R.id.action_container -> startActivity(
+                android.content.Intent(this, ContainerActivity::class.java)
+                    .putExtra(ContainerActivity.EXTRA_FILE, currentFile?.name))
             R.id.action_environments -> showEnvironmentsDialog()
             R.id.action_libraries -> showLibrariesDialog()
             R.id.action_pip -> showPipDialog()

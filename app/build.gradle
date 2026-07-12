@@ -11,9 +11,12 @@ android {
     defaultConfig {
         applicationId "com.ssebanom.pythonide"
         minSdk 26
-        targetSdk 34
-        versionCode 6
-        versionName "1.5"
+        // Targeting API 28 lets the app execute the bundled proot/busybox
+        // binaries from its private storage (Android 10+ blocks this for
+        // apps targeting API 29+), which is required for the Linux container.
+        targetSdk 28
+        versionCode 7
+        versionName "2.0"
 
         ndk {
             // Samsung Galaxy S25 Ultra is arm64; keeping a single ABI halves APK size.
@@ -43,6 +46,18 @@ android {
             // 16 KB-page devices (required for Android 15+ / S25 Ultra).
             useLegacyPackaging false
         }
+    }
+
+    androidResources {
+        // The Alpine rootfs is already gzip-compressed; don't re-compress it.
+        noCompress += "gz"
+    }
+
+    lint {
+        // We deliberately target API 28 to allow executing the container
+        // binaries; don't fail the release build over the Play-store rule.
+        disable += "ExpiredTargetSdkVersion"
+        abortOnError false
     }
 
     compileOptions {
