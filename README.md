@@ -23,8 +23,9 @@ S25 Ultra, works on any arm64 device with Android 8.0+). Ships with CPython
 
 ## Install
 
-Grab `python-ide.apk` (built from this repo), copy it to the phone, and open
-it. Android will ask to allow installs from unknown sources — allow it.
+Download [`release/python-ide.apk`](release/python-ide.apk) (tap it on
+GitHub, then use the download button), copy it to the phone, and open it.
+Android will ask to allow installs from unknown sources — allow it.
 Alternatively every push to this repo builds the APK in GitHub Actions; download
 it from the *Build APK* workflow's artifacts.
 
