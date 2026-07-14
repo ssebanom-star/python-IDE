@@ -66,9 +66,9 @@ class ContainerActivity : AppCompatActivity() {
                 setOnClickListener { run() }
             })
         }
-        addAction("Set up / Reset") { confirmSetup() }
-        addAction("🖥 Install Desktop") { installDesktop() }
-        addAction("🖥 Start Desktop") { startDesktop() }
+        addAction("① Set up Debian") { confirmSetup() }
+        addAction("② 🖥 Install Desktop+Chrome") { installDesktop() }
+        addAction("③ 🖥 Start Desktop") { startDesktop() }
         addAction("🖥 Open Desktop") {
             startActivity(android.content.Intent(this, DesktopActivity::class.java))
         }
@@ -76,14 +76,14 @@ class ContainerActivity : AppCompatActivity() {
             ContainerManager.stopDesktop()
             append("\n[desktop stop requested]\n")
         }
-        addAction("apk update") { runInContainer("apk update") }
+        addAction("apt update") { runInContainer("apt-get update") }
         addAction("Node.js") { installPkg("nodejs npm") }
-        addAction("Python3") { installPkg("python3 py3-pip") }
+        addAction("Python3") { installPkg("python3 python3-pip") }
         addAction("Ruby") { installPkg("ruby") }
-        addAction("Go") { installPkg("go") }
-        addAction("PHP") { installPkg("php") }
-        addAction("Rust") { installPkg("rust cargo") }
-        addAction("C/C++") { installPkg("build-base") }
+        addAction("Go") { installPkg("golang") }
+        addAction("PHP") { installPkg("php-cli") }
+        addAction("Rust") { installPkg("rustc cargo") }
+        addAction("C/C++") { installPkg("build-essential") }
         addAction("Perl") { installPkg("perl") }
         currentFileName?.let { name ->
             addAction("▶ Run $name") { runCurrentFile(name) }
@@ -146,27 +146,38 @@ class ContainerActivity : AppCompatActivity() {
 
         if (!ContainerManager.isInstalled(this)) {
             append(
-                "Welcome to the experimental Linux container.\n\n" +
-                    "This runs a real Alpine Linux via proot, so you can install " +
-                    "language toolchains that Android can't otherwise run:\n" +
-                    "  apk add nodejs • ruby • go • php • rust • python3 …\n\n" +
-                    "Tap \"Set up / Reset\" to unpack it (about 5 MB, one time).\n"
+                "Welcome to the experimental Debian Linux container.\n\n" +
+                    "This runs real Debian via proot, so you can install a full " +
+                    "Linux desktop and the Chromium browser that Android can't " +
+                    "otherwise run.\n\n" +
+                    "Steps (one time, needs Wi-Fi):\n" +
+                    "  ① Set up Debian            (~95 MB download)\n" +
+                    "  ② Install Desktop+Chrome   (~500 MB via apt)\n" +
+                    "  ③ Start Desktop → it opens automatically\n"
+            )
+        } else if (!ContainerManager.desktopInstalled(this)) {
+            append(
+                "Debian ready. Tap \"② Install Desktop+Chrome\" for the GUI, or " +
+                    "run shell commands below (e.g. apt-get install -y cowsay).\n"
             )
         } else {
             append(
-                "Container ready. Try: node -v   or   apk add nodejs && node -v\n" +
-                    "For a full Linux desktop: 🖥 Install Desktop → 🖥 Start Desktop.\n"
+                "Debian + desktop + Chromium installed. Tap \"③ Start Desktop\", " +
+                    "wait ~30 s, then use Chromium from the XFCE menu.\n"
             )
         }
     }
 
     private fun confirmSetup() {
         if (busy) { append("\n[busy — wait for the current command]\n"); return }
+        val already = ContainerManager.isInstalled(this)
         androidx.appcompat.app.AlertDialog.Builder(this)
-            .setTitle("Set up Linux container")
+            .setTitle("Set up Debian container")
             .setMessage(
-                "Unpack the Alpine Linux rootfs into app storage. Existing " +
-                    "container packages will be reset. Continue?"
+                (if (already) "This will RESET the container (all installed " +
+                    "packages are lost) and re-download Debian.\n\n" else "") +
+                    "Downloads a Debian Linux rootfs (~95 MB) and unpacks it. " +
+                    "Needs Wi-Fi. Continue?"
             )
             .setPositiveButton("Set up") { _, _ -> doSetup() }
             .setNegativeButton("Cancel", null)
@@ -176,37 +187,50 @@ class ContainerActivity : AppCompatActivity() {
     private fun doSetup() {
         if (busy) return
         busy = true
-        append("\n=== Setting up container ===\n")
+        append("\n=== Setting up Debian (one time) ===\n")
         Thread({
-            val ok = ContainerManager.setup(this) { append(it) }
+            val ok = ContainerManager.setupBase(this) { append(it) }
             runOnUiThread {
                 busy = false
-                append(if (ok) "\n✓ Done.\n" else "\n✗ Setup failed.\n")
+                append(
+                    if (ok) "\n✓ Debian ready. Next: tap \"Install Desktop+Chrome\".\n"
+                    else "\n✗ Setup failed.\n"
+                )
             }
         }, "ContainerSetup").start()
     }
 
     private fun installPkg(pkgs: String) {
-        runInContainer("apk add $pkgs && echo '--- installed: $pkgs ---'")
+        runInContainer(
+            "export DEBIAN_FRONTEND=noninteractive && apt-get install -y $pkgs " +
+                "&& echo '--- installed: $pkgs ---'"
+        )
     }
 
     // ------------------------------------------------------ desktop (GUI)
 
     private fun installDesktop() {
+        if (!ContainerManager.isInstalled(this)) {
+            append("\nSet up Debian first (tap \"① Set up Debian\").\n")
+            return
+        }
         if (ContainerManager.desktopInstalled(this)) {
-            append("\nDesktop is already installed — tap \"Start Desktop\".\n")
+            append("\nDesktop + Chrome already installed — tap \"Start Desktop\".\n")
             return
         }
         androidx.appcompat.app.AlertDialog.Builder(this)
-            .setTitle("Install Linux desktop (XFCE)")
+            .setTitle("Install desktop + Chromium")
             .setMessage(
-                "Downloads the XFCE desktop, VNC server and noVNC viewer " +
-                    "into the container (roughly 200–300 MB). Continue?"
+                "Installs the XFCE desktop, a VNC/noVNC viewer and the Chromium " +
+                    "browser via apt (roughly 500 MB download, several minutes " +
+                    "on Wi-Fi). This is a one-time step. Continue?"
             )
             .setPositiveButton("Install") { _, _ ->
                 runInContainer(
-                    "apk update && apk add ${ContainerManager.DESKTOP_PACKAGES} " +
-                        "&& echo '--- desktop installed: tap Start Desktop ---'"
+                    "export DEBIAN_FRONTEND=noninteractive && apt-get update && " +
+                        "apt-get install -y --no-install-recommends " +
+                        "${ContainerManager.DESKTOP_PACKAGES} && " +
+                        "echo '=== desktop + Chromium installed: tap Start Desktop ==='"
                 )
             }
             .setNegativeButton("Cancel", null)
@@ -215,11 +239,11 @@ class ContainerActivity : AppCompatActivity() {
 
     private fun startDesktop() {
         if (!ContainerManager.isInstalled(this)) {
-            append("\nContainer isn't set up yet — tap \"Set up / Reset\" first.\n")
+            append("\nContainer isn't set up yet — tap \"① Set up Debian\" first.\n")
             return
         }
         if (!ContainerManager.desktopInstalled(this)) {
-            append("\nDesktop isn't installed yet — tap \"Install Desktop\" first.\n")
+            append("\nDesktop isn't installed yet — tap \"② Install Desktop+Chrome\".\n")
             return
         }
         if (ContainerManager.desktopRunning()) {
@@ -235,16 +259,17 @@ class ContainerActivity : AppCompatActivity() {
         val cap = 1600
         if (w > cap) { h = h * cap / w; w = cap }
         w = w and 1.inv(); h = h and 1.inv()  // force even dimensions
-        append("\n=== Starting desktop (${w}x${h}) — first start takes ~20–30 s ===\n")
+        append("\n=== Starting desktop (${w}x${h}) — first start takes ~30 s ===\n")
         val ok = ContainerManager.startDesktop(this, scriptsDir, w, h) { append(it) }
         if (ok) {
-            append("Opening desktop view in 10 s… (or tap \"Open Desktop\")\n")
+            append("Opening desktop view in 15 s… (or tap \"Open Desktop\").\n" +
+                "If it's black at first, wait — the XFCE panel appears shortly.\n")
             output.postDelayed({
                 if (!isFinishing && ContainerManager.desktopRunning()) {
                     startActivity(
                         android.content.Intent(this, DesktopActivity::class.java))
                 }
-            }, 10_000)
+            }, 15_000)
         }
     }
 
